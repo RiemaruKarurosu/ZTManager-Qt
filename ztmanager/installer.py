@@ -29,9 +29,26 @@ def _get_os_info() -> dict:
     return info
 
 
-def _build_install_script(_os_id: str) -> str:
-    # The official install.zerotier.com script handles all supported distros
-    # (including Fedora/Nobara via ID_LIKE detection) and is always up-to-date.
+def _build_install_script(os_id: str) -> str:
+    if os_id == "nobara":
+        # install.zerotier.com doesn't recognise "nobara".  Temporarily set
+        # ID=fedora in /etc/os-release so the script takes the Fedora path,
+        # then restore the original file — even if the install fails.
+        return r"""set -e
+echo "Backing up /etc/os-release..."
+cp /etc/os-release /tmp/os-release.zt_backup
+
+restore() { cp /tmp/os-release.zt_backup /etc/os-release; rm -f /tmp/os-release.zt_backup; }
+trap restore EXIT
+
+echo "Applying Fedora compatibility shim for Nobara..."
+sed -i 's/^ID=nobara/ID=fedora/' /etc/os-release
+sed -i 's/^NAME="Nobara Linux"/NAME="Fedora Linux"/' /etc/os-release
+
+echo "Running official ZeroTier install script (Fedora mode)..."
+curl -s https://install.zerotier.com | bash
+echo "Installation complete!"
+"""
     return "curl -s https://install.zerotier.com | bash"
 
 
