@@ -31,22 +31,25 @@ def _get_os_info() -> dict:
 
 def _build_install_script(os_id: str) -> str:
     if os_id == "nobara":
-        # install.zerotier.com doesn't recognise "nobara".  Temporarily set
-        # ID=fedora in /etc/os-release so the script takes the Fedora path,
-        # then restore the original file — even if the install fails.
+        # install.zerotier.com doesn't recognise "nobara", but Nobara is
+        # Fedora-based.  Download the script to /tmp, patch it in-place to
+        # add Nobara wherever Fedora appears, then run it.  No system files
+        # are touched.
         return r"""set -e
-echo "Backing up /etc/os-release..."
-cp /etc/os-release /tmp/os-release.zt_backup
+echo "Downloading ZeroTier install script..."
+curl -fsS https://install.zerotier.com > /tmp/zt_install.sh
 
-restore() { cp /tmp/os-release.zt_backup /etc/os-release; rm -f /tmp/os-release.zt_backup; }
-trap restore EXIT
+echo "Patching script for Nobara compatibility..."
+# case-statement branches:   fedora)  →  fedora|nobara)
+sed -i 's/fedora)/fedora|nobara)/g' /tmp/zt_install.sh
+# string comparisons:        "fedora" →  "fedora"|"nobara"
+sed -i 's/"fedora"/"fedora"|"nobara"/g' /tmp/zt_install.sh
+# fallback: after the script sources /etc/os-release, remap ID if needed
+sed -i 's|\. /etc/os-release|. /etc/os-release; [ "$ID" = "nobara" ] \&\& ID=fedora|g' /tmp/zt_install.sh
 
-echo "Applying Fedora compatibility shim for Nobara..."
-sed -i 's/^ID=nobara/ID=fedora/' /etc/os-release
-sed -i 's/^NAME="Nobara Linux"/NAME="Fedora Linux"/' /etc/os-release
-
-echo "Running official ZeroTier install script (Fedora mode)..."
-curl -s https://install.zerotier.com | bash
+echo "Running patched install script..."
+bash /tmp/zt_install.sh
+rm -f /tmp/zt_install.sh
 echo "Installation complete!"
 """
     return "curl -s https://install.zerotier.com | bash"
