@@ -29,36 +29,9 @@ def _get_os_info() -> dict:
     return info
 
 
-def _build_install_script(os_id: str) -> str:
-    if os_id == "nobara":
-        # Write the .repo file inline so we never depend on download.zerotier.com/redhat/zerotier.repo
-        # ($releasever and $basearch are DNF variables, not shell variables — use 'REPOEOF' to prevent expansion)
-        return r"""set -e
-echo "Importing ZeroTier GPG key..."
-rpm --import https://raw.githubusercontent.com/zerotier/ZeroTierOne/main/doc/contact%40zerotier.com.gpg
-
-echo "Writing ZeroTier repository file..."
-cat > /etc/yum.repos.d/zerotier.repo << 'REPOEOF'
-[zerotier]
-name=ZeroTier Package Repository
-baseurl=https://download.zerotier.com/redhat/fc/$releasever/$basearch/
-enabled=1
-gpgcheck=1
-gpgkey=https://raw.githubusercontent.com/zerotier/ZeroTierOne/main/doc/contact%40zerotier.com.gpg
-REPOEOF
-
-echo "Installing zerotier-one via dnf..."
-dnf install -y zerotier-one || {
-    echo "Fedora path failed, trying RHEL9 fallback..."
-    sed -i 's|fc/$releasever|el/9|g' /etc/yum.repos.d/zerotier.repo
-    dnf install -y zerotier-one
-}
-
-echo "Enabling and starting zerotier-one service..."
-systemctl enable zerotier-one
-systemctl start zerotier-one
-echo "Installation complete!"
-"""
+def _build_install_script(_os_id: str) -> str:
+    # The official install.zerotier.com script handles all supported distros
+    # (including Fedora/Nobara via ID_LIKE detection) and is always up-to-date.
     return "curl -s https://install.zerotier.com | bash"
 
 
@@ -130,11 +103,8 @@ class ZeroTierInstallerDialog(QDialog):
 
         if self._os_id == "nobara":
             self._append_output(
-                _(
-                    "Nobara Linux detected.\n"
-                    "The official install script does not support Nobara, so ZT Manager\n"
-                    "will add the Fedora ZeroTier RPM repository and install via dnf.\n\n"
-                )
+                _("Nobara Linux detected (Fedora-based).\n"
+                  "Running official ZeroTier install script — Fedora is supported via ID_LIKE.\n\n")
             )
         else:
             self._append_output(_("Running official ZeroTier install script...\n\n"))
