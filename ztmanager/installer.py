@@ -31,19 +31,34 @@ def _get_os_info() -> dict:
 
 def _build_install_script(os_id: str) -> str:
     if os_id == "nobara":
-        return (
-            "set -e\n"
-            'echo "Importing ZeroTier GPG key..."\n'
-            "rpm --import https://raw.githubusercontent.com/zerotier/ZeroTierOne/main/doc/contact%40zerotier.com.gpg\n"
-            'echo "Adding ZeroTier RPM repository (Fedora)..."\n'
-            "curl -fsSL -o /etc/yum.repos.d/zerotier.repo https://download.zerotier.com/redhat/zerotier.repo\n"
-            'echo "Installing zerotier-one via dnf..."\n'
-            "dnf install -y zerotier-one\n"
-            'echo "Enabling and starting zerotier-one service..."\n'
-            "systemctl enable zerotier-one\n"
-            "systemctl start zerotier-one\n"
-            'echo "Installation complete!"\n'
-        )
+        # Write the .repo file inline so we never depend on download.zerotier.com/redhat/zerotier.repo
+        # ($releasever and $basearch are DNF variables, not shell variables — use 'REPOEOF' to prevent expansion)
+        return r"""set -e
+echo "Importing ZeroTier GPG key..."
+rpm --import https://raw.githubusercontent.com/zerotier/ZeroTierOne/main/doc/contact%40zerotier.com.gpg
+
+echo "Writing ZeroTier repository file..."
+cat > /etc/yum.repos.d/zerotier.repo << 'REPOEOF'
+[zerotier]
+name=ZeroTier Package Repository
+baseurl=https://download.zerotier.com/redhat/fc/$releasever/$basearch/
+enabled=1
+gpgcheck=1
+gpgkey=https://raw.githubusercontent.com/zerotier/ZeroTierOne/main/doc/contact%40zerotier.com.gpg
+REPOEOF
+
+echo "Installing zerotier-one via dnf..."
+dnf install -y zerotier-one || {
+    echo "Fedora path failed, trying RHEL9 fallback..."
+    sed -i 's|fc/$releasever|el/9|g' /etc/yum.repos.d/zerotier.repo
+    dnf install -y zerotier-one
+}
+
+echo "Enabling and starting zerotier-one service..."
+systemctl enable zerotier-one
+systemctl start zerotier-one
+echo "Installation complete!"
+"""
     return "curl -s https://install.zerotier.com | bash"
 
 

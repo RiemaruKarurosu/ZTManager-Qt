@@ -1,21 +1,31 @@
-from PySide6.QtCore import QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QIcon, QPainter
+from PySide6.QtCore import (
+    Property,
+    QEasingCurve,
+    QPropertyAnimation,
+    QSize,
+    Qt,
+    QTimer,
+    Signal,
+)
+from PySide6.QtGui import QAction, QColor, QIcon, QPainter
 from PySide6.QtWidgets import (
     QAbstractButton,
     QApplication,
     QDialog,
     QDialogButtonBox,
-    QFormLayout,
     QFrame,
+    QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPushButton,
-    QScrollArea,
     QSizePolicy,
+    QSplitter,
     QToolBar,
     QVBoxLayout,
     QWidget,
@@ -25,188 +35,381 @@ from .installer import ZeroTierInstallerDialog
 from .zerotierlib import ZeroTierNetwork
 from . import _
 
+# ── Breeze colours ────────────────────────────────────────────────────────────
+BREEZE_BLUE   = "#3daee9"
+BREEZE_GREEN  = "#1cdc9a"
+BREEZE_ORANGE = "#f67400"
+BREEZE_RED    = "#da4453"
+BREEZE_GRAY   = "#7f8c8d"
+
+_STATUS_MAP: dict[str, tuple[str, str]] = {
+    "OK":                       (BREEZE_GREEN,  _("Connected")),
+    "REQUESTING_CONFIGURATION": (BREEZE_ORANGE, _("Connecting…")),
+    "WAITING_FOR_NETWORK_DATA": (BREEZE_ORANGE, _("Waiting…")),
+    "JOINING":                  (BREEZE_ORANGE, _("Joining…")),
+    "ACCESS_DENIED":            (BREEZE_RED,    _("Access Denied")),
+    "__disabled__":             (BREEZE_GRAY,   _("Disabled")),
+}
+
+def _status_info(network: dict) -> tuple[str, str]:
+    if not network.get("allowManaged", True):
+        return _STATUS_MAP["__disabled__"]
+    return _STATUS_MAP.get(
+        network.get("status", ""),
+        (BREEZE_RED, network.get("status", "Unknown")),
+    )
+
+
+# ── Reusable widgets ──────────────────────────────────────────────────────────
+
+class _StatusDot(QWidget):
+    """12 px painted circle status indicator."""
+
+    def __init__(self, color: str = BREEZE_GRAY, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(12, 12)
+        self._color = QColor(color)
+
+    def set_color(self, color: str):
+        self._color = QColor(color)
+        self.update()
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(self._color)
+        p.drawEllipse(0, 0, 12, 12)
+        p.end()
+
 
 class ToggleSwitch(QAbstractButton):
-    """Breeze-style toggle switch that replaces GtkSwitch."""
+    """Animated Breeze-style toggle switch."""
+    _TW, _TH, _TD = 40, 20, 14
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setCheckable(True)
-        self.setFixedSize(48, 26)
+        self.setFixedSize(self._TW + 4, self._TH + 4)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._pos = 0.0
+        self._anim = QPropertyAnimation(self, b"_p", self)
+        self._anim.setDuration(130)
+        self._anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        self.toggled.connect(self._on_toggled)
 
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        palette = self.palette()
+    def _get_p(self): return self._pos
+    def _set_p(self, v):
+        self._pos = v
+        self.update()
+    _p = Property(float, _get_p, _set_p)
 
-        track_color = (
-            palette.highlight().color() if self.isChecked() else palette.mid().color()
-        )
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(track_color)
-        painter.drawRoundedRect(1, 5, 46, 16, 8, 8)
+    def _on_toggled(self, checked: bool):
+        self._anim.stop()
+        self._anim.setStartValue(self._pos)
+        self._anim.setEndValue(1.0 if checked else 0.0)
+        self._anim.start()
 
-        thumb_color = (
-            palette.base().color() if self.isChecked() else palette.light().color()
-        )
-        painter.setBrush(thumb_color)
-        x = 23 if self.isChecked() else 2
-        painter.drawEllipse(x, 1, 24, 24)
-        painter.end()
+    def snap_to(self, checked: bool):
+        """Set state instantly, no animation (for programmatic updates)."""
+        self._anim.stop()
+        self._pos = 1.0 if checked else 0.0
+        self.blockSignals(True)
+        super().setChecked(checked)
+        self.blockSignals(False)
+        self.update()
 
-    def sizeHint(self):
-        return QSize(48, 26)
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        tw, th = self._TW, self._TH
+        tx = (self.width()  - tw) // 2
+        ty = (self.height() - th) // 2
+        g, b = QColor(BREEZE_GRAY), QColor(BREEZE_BLUE)
+        r_ = int(g.red()   + (b.red()   - g.red())   * self._pos)
+        g_ = int(g.green() + (b.green() - g.green()) * self._pos)
+        b_ = int(g.blue()  + (b.blue()  - g.blue())  * self._pos)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(r_, g_, b_))
+        p.drawRoundedRect(tx, ty, tw, th, th / 2, th / 2)
+        td, m = self._TD, (th - self._TD) // 2
+        xp = int(tx + m + self._pos * (tw - td - 2 * m))
+        p.setBrush(QColor("white"))
+        p.drawEllipse(xp, ty + m, td, td)
+        p.end()
+
+    def sizeHint(self): return QSize(self._TW + 4, self._TH + 4)
 
 
-class NetworkCard(QFrame):
-    """Single network row — equivalent to Adw.ActionRow."""
+# ── Left panel: compact list row ──────────────────────────────────────────────
 
-    toggle_changed = Signal(str, bool)
-    settings_requested = Signal(str)
-
+class _NetworkRowWidget(QWidget):
     def __init__(self, network: dict, parent=None):
         super().__init__(parent)
-        self.network_id = network["id"]
-        self._build_ui(network)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 8, 12, 8)
+        layout.setSpacing(10)
 
-    def _build_ui(self, network: dict):
-        self.setObjectName("NetworkCard")
-        self.setFrameStyle(QFrame.Shape.StyledPanel)
-
-        row = QHBoxLayout(self)
-        row.setContentsMargins(12, 10, 12, 10)
-        row.setSpacing(10)
-
-        self._icon = QLabel()
-        self._icon.setFixedSize(22, 22)
-        row.addWidget(self._icon)
+        color, _ = _status_info(network)
+        self._dot = _StatusDot(color)
+        layout.addWidget(self._dot, 0, Qt.AlignmentFlag.AlignVCenter)
 
         text = QVBoxLayout()
-        text.setSpacing(2)
+        text.setSpacing(1)
         text.setContentsMargins(0, 0, 0, 0)
 
         self._name = QLabel()
-        bold = self._name.font()
-        bold.setBold(True)
-        self._name.setFont(bold)
+        f = self._name.font()
+        f.setBold(True)
+        self._name.setFont(f)
         text.addWidget(self._name)
 
-        self._sub = QLabel()
-        self._sub.setObjectName("SubtitleLabel")
-        text.addWidget(self._sub)
+        self._nwid = QLabel()
+        self._nwid.setObjectName("SubtitleLabel")
+        f2 = self._nwid.font()
+        f2.setPointSize(f2.pointSize() - 1)
+        self._nwid.setFont(f2)
+        text.addWidget(self._nwid)
 
-        row.addLayout(text, 1)
+        layout.addLayout(text, 1)
 
-        self._toggle = ToggleSwitch()
-        self._toggle.toggled.connect(
-            lambda state: self.toggle_changed.emit(self.network_id, state)
-        )
-        row.addWidget(self._toggle)
-
-        settings_btn = QPushButton()
-        settings_btn.setIcon(QIcon.fromTheme("configure"))
-        settings_btn.setFixedSize(30, 30)
-        settings_btn.setFlat(True)
-        settings_btn.setToolTip(_("Network settings"))
-        settings_btn.clicked.connect(
-            lambda: self.settings_requested.emit(self.network_id)
-        )
-        row.addWidget(settings_btn)
+        _, status_text = _status_info(network)
+        self._status = QLabel(status_text)
+        self._status.setObjectName("StatusText")
+        f3 = self._status.font()
+        f3.setPointSize(f3.pointSize() - 1)
+        self._status.setFont(f3)
+        layout.addWidget(self._status, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.update_data(network)
 
     def update_data(self, network: dict):
-        name = network.get("name") or network.get("nwid") or "Unknown"
-        self._name.setText(name)
+        color, status_text = _status_info(network)
+        self._dot.set_color(color)
+        self._name.setText(network.get("name") or network.get("nwid") or "Unknown")
+        self._nwid.setText(network.get("nwid", ""))
+        self._status.setText(status_text)
+        self._status.setStyleSheet(f"color: {color};")
 
-        allow_managed = network.get("allowManaged", True)
-        display_status = _("Disabled") if not allow_managed else network.get("status", "")
-        addrs = network.get("assignedAddresses", [])
-        ips = ", ".join(addrs) if isinstance(addrs, list) and addrs else "—"
-        self._sub.setText(
-            f"ID: {network.get('nwid', '?')}   IP: {ips}   Status: {display_status}"
+
+# ── Right panel: detail view ──────────────────────────────────────────────────
+
+class _DetailPanel(QWidget):
+    network_removed = Signal(str)
+
+    def __init__(self, ztlib: ZeroTierNetwork, parent=None):
+        super().__init__(parent)
+        self.ztlib = ztlib
+        self._network: dict | None = None
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # Placeholder
+        self._placeholder = QWidget()
+        ph = QVBoxLayout(self._placeholder)
+        ph.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ph.setSpacing(10)
+        ph_icon = QLabel()
+        ph_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ph_icon.setPixmap(QIcon.fromTheme("network-wired").pixmap(QSize(48, 48)))
+        ph.addWidget(ph_icon)
+        ph_lbl = QLabel(_("Select a network to view its details"))
+        ph_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ph_lbl.setObjectName("SubtitleLabel")
+        ph.addWidget(ph_lbl)
+        root.addWidget(self._placeholder)
+
+        # Content
+        from PySide6.QtWidgets import QScrollArea
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameStyle(QFrame.Shape.NoFrame)
+        self._scroll = scroll
+        self._scroll.hide()
+
+        inner = QWidget()
+        il = QVBoxLayout(inner)
+        il.setContentsMargins(18, 16, 18, 18)
+        il.setSpacing(14)
+
+        # Title row with dot
+        title_row = QHBoxLayout()
+        self._title_dot = _StatusDot()
+        title_row.addWidget(self._title_dot, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._title = QLabel()
+        tf = self._title.font()
+        tf.setBold(True)
+        tf.setPointSize(tf.pointSize() + 3)
+        self._title.setFont(tf)
+        title_row.addWidget(self._title, 1)
+        il.addLayout(title_row)
+
+        # Info
+        info_grp = QGroupBox(_("Network Information"))
+        self._form = QFormLayout(info_grp)
+        self._form.setSpacing(8)
+        self._form.setHorizontalSpacing(20)
+        il.addWidget(info_grp)
+
+        # Control
+        ctrl_grp = QGroupBox(_("Control"))
+        ctrl_l = QVBoxLayout(ctrl_grp)
+        ctrl_l.setSpacing(10)
+
+        toggle_row = QHBoxLayout()
+        ttext = QVBoxLayout()
+        ttext.setSpacing(2)
+        ttext.addWidget(QLabel(f"<b>{_('Enable Network')}</b>"))
+        ts = QLabel(_("Allow ZeroTier to route traffic through this network"))
+        ts.setObjectName("SubtitleLabel")
+        ttext.addWidget(ts)
+        toggle_row.addLayout(ttext, 1)
+        self._toggle = ToggleSwitch()
+        self._toggle.toggled.connect(self._on_toggle)
+        toggle_row.addWidget(self._toggle, 0, Qt.AlignmentFlag.AlignVCenter)
+        ctrl_l.addLayout(toggle_row)
+        il.addWidget(ctrl_grp)
+
+        # Remove
+        self._remove_btn = QPushButton(
+            QIcon.fromTheme("edit-delete"), _("Remove Network")
         )
+        self._remove_btn.setObjectName("DestructiveButton")
+        self._remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._remove_btn.clicked.connect(self._on_remove)
+        il.addWidget(self._remove_btn)
+        il.addStretch()
 
-        if not allow_managed:
-            icon_name = "network-offline"
-        elif network.get("status") == "OK":
-            icon_name = "emblem-default"
-        elif network.get("status") in (
-            "REQUESTING_CONFIGURATION",
-            "WAITING_FOR_NETWORK_DATA",
-            "JOINING",
-        ):
-            icon_name = "view-refresh"
-        elif network.get("status") == "ACCESS_DENIED":
-            icon_name = "emblem-important"
-        else:
-            icon_name = "dialog-error"
+        scroll.setWidget(inner)
+        root.addWidget(scroll)
 
-        self._icon.setPixmap(QIcon.fromTheme(icon_name).pixmap(QSize(22, 22)))
+    def show_network(self, network: dict):
+        self._network = network
+        color, _ = _status_info(network)
+        self._title_dot.set_color(color)
+        self._title.setText(network.get("name") or network.get("nwid") or "Unknown")
 
-        self._toggle.blockSignals(True)
-        self._toggle.setChecked(allow_managed)
-        self._toggle.blockSignals(False)
+        while self._form.rowCount():
+            self._form.removeRow(0)
 
+        ips = ", ".join(network.get("assignedAddresses", [])) or "—"
+        _, status_text = _status_info(network)
+        for label, value in [
+            ("ID",        network.get("nwid", "?")),
+            (_("Status"), status_text),
+            ("IPs",       ips),
+            ("MAC",       network.get("mac", "Unknown")),
+            ("MTU",       str(network.get("mtu", "?"))),
+        ]:
+            self._form.addRow(f"<b>{label}</b>", self._copy_row(value))
+
+        self._toggle.snap_to(network.get("allowManaged", True))
+        self._placeholder.hide()
+        self._scroll.show()
+
+    def _copy_row(self, value: str) -> QWidget:
+        w = QWidget()
+        rl = QHBoxLayout(w)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(4)
+        lbl = QLabel(value)
+        lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        f = lbl.font()
+        f.setFamily("monospace")
+        lbl.setFont(f)
+        rl.addWidget(lbl, 1)
+        btn = QPushButton()
+        btn.setIcon(QIcon.fromTheme("edit-copy"))
+        btn.setFixedSize(24, 24)
+        btn.setFlat(True)
+        btn.setToolTip(_("Copy"))
+        btn.clicked.connect(lambda _, v=value: QApplication.clipboard().setText(v))
+        rl.addWidget(btn)
+        return w
+
+    def clear(self):
+        self._network = None
+        self._scroll.hide()
+        self._placeholder.show()
+
+    def _on_toggle(self, state: bool):
+        if self._network:
+            self.ztlib.update_network(self._network["id"], {"allowManaged": state})
+
+    def _on_remove(self):
+        if not self._network:
+            return
+        reply = QMessageBox.warning(
+            self, _("Remove Network"),
+            _("Remove this network?\nZeroTier will forget it completely."),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            nid = self._network["id"]
+            self.ztlib.leave_networks(nid)
+            self.network_removed.emit(nid)
+            self.clear()
+
+
+# ── Info bar ──────────────────────────────────────────────────────────────────
 
 class InfoBar(QFrame):
-    """Warning banner shown when ZeroTier is unavailable."""
-
     install_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("InfoBar")
-
+        self.setFixedHeight(42)
         row = QHBoxLayout(self)
-        row.setContentsMargins(12, 8, 12, 8)
+        row.setContentsMargins(12, 0, 12, 0)
         row.setSpacing(8)
-
         icon = QLabel()
-        icon.setPixmap(QIcon.fromTheme("dialog-warning").pixmap(QSize(20, 20)))
+        icon.setPixmap(QIcon.fromTheme("dialog-warning").pixmap(QSize(18, 18)))
         row.addWidget(icon)
-
         self._msg = QLabel()
-        self._msg.setWordWrap(True)
         row.addWidget(self._msg, 1)
-
         self._install_btn = QPushButton(_("Install ZeroTier"))
-        self._install_btn.setObjectName("suggestedButton")
+        self._install_btn.setObjectName("SuggestedButton")
         self._install_btn.clicked.connect(self.install_requested.emit)
         row.addWidget(self._install_btn)
-
         self.hide()
 
-    def set_message(self, message: str, show_install: bool = False):
-        self._msg.setText(message)
+    def set_message(self, msg: str, show_install: bool = False):
+        self._msg.setText(msg)
         self._install_btn.setVisible(show_install)
         self.show()
 
 
+# ── Dialogs ───────────────────────────────────────────────────────────────────
+
 class AddNetworkDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(_("Add Network"))
-        self.setMinimumWidth(340)
-
+        self.setWindowTitle(_("Join Network"))
+        self.setMinimumWidth(360)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)
-
-        layout.addWidget(QLabel(_("Enter the Network ID to join:")))
-
+        layout.addWidget(QLabel(f"<b>{_('Network ID:')}</b>"))
         self.id_input = QLineEdit()
-        self.id_input.setPlaceholderText(_("Network ID (e.g. 8056c2e21c000001)"))
+        self.id_input.setPlaceholderText("8056c2e21c000001")
         self.id_input.setClearButtonEnabled(True)
+        self.id_input.setMinimumHeight(32)
         layout.addWidget(self.id_input)
-
-        buttons = QDialogButtonBox(
+        hint = QLabel(_("16-character hex string provided by the network owner."))
+        hint.setObjectName("SubtitleLabel")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        btns.button(QDialogButtonBox.StandardButton.Ok).setText(_("Join"))
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
 
     def network_id(self) -> str:
         return self.id_input.text().strip()
@@ -215,224 +418,263 @@ class AddNetworkDialog(QDialog):
 class PeersDialog(QDialog):
     def __init__(self, parent, ztlib: ZeroTierNetwork):
         super().__init__(parent)
-        self.setWindowTitle(_("Peers"))
-        self.setMinimumSize(520, 400)
-
+        self.setWindowTitle(_("Connected Peers"))
+        self.setMinimumSize(520, 420)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameStyle(QFrame.Shape.StyledPanel)
+        hdr = QFrame()
+        hdr.setObjectName("ListHeader")
+        hl = QHBoxLayout(hdr)
+        hl.setContentsMargins(12, 8, 12, 8)
+        hl.addWidget(QLabel(f"<b>{_('Peers')}</b>"))
+        hl.addStretch()
+        layout.addWidget(hdr)
 
-        container = QWidget()
-        vbox = QVBoxLayout(container)
-        vbox.setSpacing(4)
-        vbox.setContentsMargins(8, 8, 8, 8)
-
+        peer_list = QListWidget()
+        peer_list.setFrameStyle(QFrame.Shape.NoFrame)
+        peer_list.setAlternatingRowColors(True)
         peers = ztlib.get_peers()
-        if peers:
-            for peer in peers:
-                card = QFrame()
-                card.setObjectName("NetworkCard")
-                card.setFrameStyle(QFrame.Shape.StyledPanel)
+        for peer in (peers or []):
+            paths = peer.get("paths", [])
+            ip   = paths[0].get("address") if paths else _("No IP")
+            lat  = peer.get("latency", -1)
+            role = peer.get("role", "LEAF")
+            addr = peer.get("address", "Unknown")
+            item = QListWidgetItem()
+            item.setSizeHint(QSize(0, 52))
+            peer_list.addItem(item)
+            row = QWidget()
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(10, 6, 12, 6)
+            rl.setSpacing(10)
+            dot = _StatusDot(BREEZE_BLUE if role == "PLANET" else BREEZE_GREEN)
+            rl.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
+            info = QVBoxLayout()
+            info.setSpacing(2)
+            info.addWidget(QLabel(f"<b>{addr}</b>"))
+            sub = QLabel(f"{role}  ·  {ip}  ·  {lat} ms")
+            sub.setObjectName("SubtitleLabel")
+            info.addWidget(sub)
+            rl.addLayout(info, 1)
+            peer_list.setItemWidget(item, row)
 
-                cl = QVBoxLayout(card)
-                cl.setContentsMargins(10, 8, 10, 8)
-                cl.setSpacing(2)
+        if not peers:
+            empty = QListWidgetItem(_("No peers found."))
+            empty.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            peer_list.addItem(empty)
 
-                title = QLabel(f"<b>Peer: {peer.get('address', 'Unknown')}</b>")
-                cl.addWidget(title)
-
-                paths = peer.get("paths", [])
-                ip = paths[0].get("address") if paths else _("No IP")
-                lat = peer.get("latency", -1)
-                sub = QLabel(
-                    _("Role: {role}  |  IP: {ip}  |  Latency: {lat} ms").format(
-                        role=peer.get("role", "Unknown"), ip=ip, lat=lat
-                    )
-                )
-                sub.setObjectName("SubtitleLabel")
-                cl.addWidget(sub)
-                vbox.addWidget(card)
-        else:
-            lbl = QLabel(_("No peers found."))
-            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            vbox.addWidget(lbl)
-
-        vbox.addStretch()
-        scroll.setWidget(container)
-        layout.addWidget(scroll)
-
+        layout.addWidget(peer_list, 1)
         close_btn = QPushButton(_("Close"))
         close_btn.clicked.connect(self.close)
-        btn_bar = QHBoxLayout()
-        btn_bar.addStretch()
-        btn_bar.addWidget(close_btn)
-        layout.addLayout(btn_bar)
+        bl = QHBoxLayout()
+        bl.setContentsMargins(12, 8, 12, 8)
+        bl.addStretch()
+        bl.addWidget(close_btn)
+        layout.addLayout(bl)
 
 
-class NetworkDetailsDialog(QDialog):
-    def __init__(self, parent, ztlib: ZeroTierNetwork, network: dict, refresh_callback):
-        super().__init__(parent)
-        self.setWindowTitle(f"{_('Details')}: {network.get('name', 'Unknown')}")
-        self.setMinimumWidth(400)
-        self.ztlib = ztlib
-        self.network_id = network.get("id")
-        self.refresh_callback = refresh_callback
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(12)
-
-        group = QGroupBox(_("Network Information"))
-        form = QFormLayout(group)
-        form.setSpacing(8)
-
-        allow_managed = network.get("allowManaged", True)
-        display_status = (
-            _("Disabled") if not allow_managed else network.get("status", "Unknown")
-        )
-        ips = ", ".join(network.get("assignedAddresses", [])) or "None"
-
-        fields = [
-            ("ID", self.network_id or ""),
-            (_("Name"), network.get("name", "Unknown")),
-            ("MAC", network.get("mac", "Unknown")),
-            ("MTU", str(network.get("mtu", "Unknown"))),
-            (_("Status"), display_status),
-            ("IPs", ips),
-        ]
-
-        for field_name, value in fields:
-            row_widget = QWidget()
-            row_layout = QHBoxLayout(row_widget)
-            row_layout.setContentsMargins(0, 0, 0, 0)
-            row_layout.setSpacing(4)
-
-            val_label = QLabel(value)
-            val_label.setTextInteractionFlags(
-                Qt.TextInteractionFlag.TextSelectableByMouse
-            )
-            row_layout.addWidget(val_label, 1)
-
-            copy_btn = QPushButton()
-            copy_btn.setIcon(QIcon.fromTheme("edit-copy"))
-            copy_btn.setFixedSize(26, 26)
-            copy_btn.setFlat(True)
-            copy_btn.setToolTip(_("Copy"))
-            copy_btn.clicked.connect(
-                lambda checked, v=value: QApplication.clipboard().setText(v)
-            )
-            row_layout.addWidget(copy_btn)
-
-            form.addRow(f"<b>{field_name}</b>", row_widget)
-
-        layout.addWidget(group)
-
-        remove_btn = QPushButton(_("Remove Network"))
-        remove_btn.setStyleSheet(
-            "QPushButton { background-color: #c0392b; color: white;"
-            " border-radius: 4px; padding: 6px 14px; }"
-            "QPushButton:hover { background-color: #e74c3c; }"
-        )
-        remove_btn.clicked.connect(self._on_remove_clicked)
-        layout.addWidget(remove_btn)
-
-        close_btn = QPushButton(_("Close"))
-        close_btn.clicked.connect(self.close)
-        btn_bar = QHBoxLayout()
-        btn_bar.addStretch()
-        btn_bar.addWidget(close_btn)
-        layout.addLayout(btn_bar)
-
-    def _on_remove_clicked(self):
-        reply = QMessageBox.warning(
-            self,
-            _("Confirm Removal"),
-            _("Are you sure you want to remove this network?\n\n"
-              "ZeroTier will forget it completely."),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Cancel,
-        )
-        if reply == QMessageBox.StandardButton.Yes:
-            self.ztlib.leave_networks(self.network_id)
-            if self.refresh_callback:
-                self.refresh_callback()
-            self.close()
-
+# ── Main window ───────────────────────────────────────────────────────────────
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("ZT Manager")
         self.setWindowIcon(QIcon.fromTheme("network-vpn"))
-        self.setMinimumSize(600, 450)
-        self.resize(720, 520)
+        self.setMinimumSize(720, 500)
+        self.resize(860, 580)
 
         self.ztlib = ZeroTierNetwork()
-        self._cards: dict[str, NetworkCard] = {}
+        self._network_data: dict[str, dict] = {}
+        self._row_widgets: dict[str, _NetworkRowWidget] = {}
 
-        self._build_ui()
-        self._build_toolbar()
+        self._build_menubar()
+        self._build_central()
+        self._build_bottom_toolbar()
         self._apply_styles()
-
         self._check_status()
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._auto_refresh)
         self._timer.start(3000)
 
-    # ── UI construction ───────────────────────────────────────────────────────
+    # ── Construction ──────────────────────────────────────────────────────────
 
-    def _build_ui(self):
+    def _build_menubar(self):
+        mb = self.menuBar()
+
+        file_m = mb.addMenu(_("&File"))
+        q = QAction(QIcon.fromTheme("application-exit"), _("&Quit"), self)
+        q.setShortcut("Ctrl+Q")
+        q.triggered.connect(self.close)
+        file_m.addAction(q)
+
+        net_m = mb.addMenu(_("&Network"))
+        add_a = QAction(QIcon.fromTheme("list-add"), _("&Join Network…"), self)
+        add_a.setShortcut("Ctrl+N")
+        add_a.triggered.connect(self._on_add_clicked)
+        net_m.addAction(add_a)
+        ref_a = QAction(QIcon.fromTheme("view-refresh"), _("&Refresh"), self)
+        ref_a.setShortcut("F5")
+        ref_a.triggered.connect(self._refresh_networks)
+        net_m.addAction(ref_a)
+        net_m.addSeparator()
+        peers_a = QAction(QIcon.fromTheme("network-workgroup"), _("View &Peers"), self)
+        peers_a.triggered.connect(self._on_peers_clicked)
+        net_m.addAction(peers_a)
+
+        set_m = mb.addMenu(_("&Settings"))
+        prefs_a = QAction(QIcon.fromTheme("configure"), _("&Configure ZT Manager…"), self)
+        prefs_a.setShortcut("Ctrl+,")
+        prefs_a.triggered.connect(self._on_preferences_clicked)
+        set_m.addAction(prefs_a)
+
+        help_m = mb.addMenu(_("&Help"))
+        about_a = QAction(QIcon.fromTheme("help-about"), _("&About ZT Manager"), self)
+        about_a.triggered.connect(self._on_about_clicked)
+        help_m.addAction(about_a)
+
+    def _build_central(self):
         central = QWidget()
         self.setCentralWidget(central)
-
         root = QVBoxLayout(central)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
+        # Info bar
         self._info_bar = InfoBar()
         self._info_bar.install_requested.connect(self._on_install_clicked)
         root.addWidget(self._info_bar)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameStyle(QFrame.Shape.NoFrame)
+        # ── Splitter ──────────────────────────────────────────────────────────
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setChildrenCollapsible(False)
 
-        self._list_widget = QWidget()
-        self._list_layout = QVBoxLayout(self._list_widget)
-        self._list_layout.setContentsMargins(12, 12, 12, 12)
-        self._list_layout.setSpacing(4)
-        self._list_layout.addStretch()
+        # Left: list
+        left = QWidget()
+        left.setObjectName("LeftPanel")
+        ll = QVBoxLayout(left)
+        ll.setContentsMargins(0, 0, 0, 0)
+        ll.setSpacing(0)
 
-        self._empty_label = QLabel(_("No networks joined yet."))
-        self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._empty_label.setObjectName("SubtitleLabel")
-        self._list_layout.insertWidget(0, self._empty_label)
+        # List header with [+] button on the right
+        list_hdr = QFrame()
+        list_hdr.setObjectName("ListHeader")
+        lh = QHBoxLayout(list_hdr)
+        lh.setContentsMargins(10, 4, 6, 4)
+        lh.setSpacing(6)
 
-        scroll.setWidget(self._list_widget)
-        root.addWidget(scroll, 1)
+        lh.addWidget(QLabel(f"<b>{_('Networks')}</b>"))
 
-    def _build_toolbar(self):
+        self._count_badge = QLabel()
+        self._count_badge.setObjectName("CountBadge")
+        self._count_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._count_badge.setFixedHeight(18)
+        self._count_badge.hide()
+        lh.addWidget(self._count_badge)
+        lh.addStretch()
+
+        add_btn = QPushButton()
+        add_btn.setIcon(QIcon.fromTheme("list-add"))
+        add_btn.setFixedSize(26, 26)
+        add_btn.setFlat(True)
+        add_btn.setToolTip(_("Join a network (Ctrl+N)"))
+        add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        add_btn.clicked.connect(self._on_add_clicked)
+        lh.addWidget(add_btn)
+
+        ll.addWidget(list_hdr)
+
+        self._list = QListWidget()
+        self._list.setSpacing(0)
+        self._list.setFrameStyle(QFrame.Shape.NoFrame)
+        self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._list.setAlternatingRowColors(True)
+        self._list.currentItemChanged.connect(self._on_selection_changed)
+        ll.addWidget(self._list, 1)
+
+        splitter.addWidget(left)
+
+        # Right: detail + empty placeholder panel
+        right = QWidget()
+        right.setObjectName("RightPanel")
+        rl = QVBoxLayout(right)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(0)
+
+        # Empty state (shown when list has no networks)
+        self._empty_widget = self._make_empty_state()
+        rl.addWidget(self._empty_widget)
+
+        self._detail = _DetailPanel(self.ztlib)
+        self._detail.network_removed.connect(self._on_network_removed)
+        self._detail.hide()
+        rl.addWidget(self._detail, 1)
+
+        splitter.addWidget(right)
+        splitter.setSizes([240, 580])
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        root.addWidget(splitter, 1)
+
+    def _make_empty_state(self) -> QWidget:
+        w = QWidget()
+        vbox = QVBoxLayout(w)
+        vbox.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        vbox.setSpacing(14)
+        vbox.setContentsMargins(30, 0, 30, 0)
+
+        icon_lbl = QLabel()
+        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon_lbl.setPixmap(
+            QIcon.fromTheme("network-disconnect").pixmap(QSize(64, 64))
+        )
+        vbox.addWidget(icon_lbl)
+
+        title = QLabel(_("No networks joined yet"))
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        f = title.font()
+        f.setBold(True)
+        f.setPointSize(f.pointSize() + 1)
+        title.setFont(f)
+        vbox.addWidget(title)
+
+        sub = QLabel(_("Join a ZeroTier network to connect with other devices."))
+        sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sub.setObjectName("SubtitleLabel")
+        sub.setWordWrap(True)
+        vbox.addWidget(sub)
+
+        big_btn = QPushButton(
+            QIcon.fromTheme("list-add"), _("Join a Network…")
+        )
+        big_btn.setObjectName("BigAddButton")
+        big_btn.setMinimumHeight(38)
+        big_btn.setMinimumWidth(180)
+        big_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        big_btn.clicked.connect(self._on_add_clicked)
+
+        row = QHBoxLayout()
+        row.addStretch()
+        row.addWidget(big_btn)
+        row.addStretch()
+        vbox.addLayout(row)
+        return w
+
+    def _build_bottom_toolbar(self):
+        """Bottom toolbar: Refresh + Peers on the left, status info on the right."""
         tb = QToolBar(_("Actions"))
         tb.setMovable(False)
-        tb.setIconSize(QSize(22, 22))
-        self.addToolBar(tb)
+        tb.setFloatable(False)
+        tb.setIconSize(QSize(20, 20))
+        tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.addToolBar(Qt.ToolBarArea.BottomToolBarArea, tb)
 
-        add = QAction(QIcon.fromTheme("list-add"), _("Add Network"), self)
-        add.setShortcut("Ctrl+N")
-        add.triggered.connect(self._on_add_clicked)
-        tb.addAction(add)
-
-        refresh = QAction(QIcon.fromTheme("view-refresh"), _("Refresh"), self)
-        refresh.setShortcut("F5")
-        refresh.triggered.connect(self._refresh_networks)
-        tb.addAction(refresh)
-
-        tb.addSeparator()
+        ref = QAction(QIcon.fromTheme("view-refresh"), _("Refresh"), self)
+        ref.setShortcut("F5")
+        ref.triggered.connect(self._refresh_networks)
+        tb.addAction(ref)
 
         peers = QAction(QIcon.fromTheme("network-workgroup"), _("Peers"), self)
         peers.triggered.connect(self._on_peers_clicked)
@@ -442,50 +684,85 @@ class MainWindow(QMainWindow):
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         tb.addWidget(spacer)
 
-        about = QAction(QIcon.fromTheme("help-about"), _("About"), self)
-        about.triggered.connect(self._on_about_clicked)
-        tb.addAction(about)
-
-        prefs = QAction(QIcon.fromTheme("configure"), _("Preferences"), self)
-        prefs.setShortcut("Ctrl+,")
-        prefs.triggered.connect(self._on_preferences_clicked)
-        tb.addAction(prefs)
+        self._sb_count   = QLabel(_("0 networks"))
+        self._sb_service = QLabel()
+        tb.addWidget(self._sb_count)
+        tb.addWidget(QLabel("  ·  "))
+        tb.addWidget(self._sb_service)
+        tb.addWidget(QLabel("  "))
 
     def _apply_styles(self):
         self.setStyleSheet(
             """
-            QFrame#NetworkCard {
-                background-color: palette(base);
-                border: 1px solid palette(mid);
-                border-radius: 6px;
+            QWidget#LeftPanel  { border-right:  1px solid palette(mid); }
+            QWidget#RightPanel { background: palette(base); }
+
+            QFrame#ListHeader {
+                background: palette(window);
+                border-bottom: 1px solid palette(mid);
             }
-            QFrame#NetworkCard:hover {
-                border-color: palette(highlight);
+            QLabel#CountBadge {
+                background: #3daee9;
+                color: white;
+                border-radius: 9px;
+                padding: 0 7px;
+                font-size: 8pt;
+                font-weight: bold;
+                min-width: 18px;
+                margin-left: 4px;
             }
+
+            QLabel#SubtitleLabel { color: palette(mid); }
+            QLabel#StatusText    { font-size: 8pt; }
+
             QFrame#InfoBar {
-                background-color: #f5a623;
-                color: #1a1a1a;
-                border-bottom: 1px solid #d4901d;
+                background: qlineargradient(
+                    x1:0,y1:0,x2:0,y2:1,
+                    stop:0 #f0a500, stop:1 #d99000);
+                border-bottom: 1px solid #b07800;
             }
-            QLabel#SubtitleLabel {
-                color: palette(mid);
-            }
-            QPushButton#suggestedButton {
-                background-color: palette(highlight);
-                color: palette(highlighted-text);
+            QFrame#InfoBar QLabel { color: #1a1200; }
+            QPushButton#SuggestedButton {
+                background: rgba(255,255,255,.28);
+                color: #1a1200;
+                border: 1px solid rgba(255,255,255,.55);
                 border-radius: 4px;
-                padding: 4px 12px;
+                padding: 3px 12px;
+                font-weight: bold;
+            }
+            QPushButton#SuggestedButton:hover {
+                background: rgba(255,255,255,.42);
+            }
+
+            QPushButton#BigAddButton {
+                background: palette(highlight);
+                color: palette(highlighted-text);
                 border: none;
+                border-radius: 5px;
+                padding: 8px 22px;
+                font-weight: bold;
+                font-size: 10pt;
             }
-            QPushButton#suggestedButton:hover {
-                background-color: palette(dark);
+            QPushButton#BigAddButton:hover  { background: palette(dark); }
+            QPushButton#BigAddButton:pressed { background: palette(shadow); }
+
+            QPushButton#DestructiveButton {
+                background: #da4453;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 14px;
+                font-weight: bold;
             }
+            QPushButton#DestructiveButton:hover   { background: #e5555f; }
+            QPushButton#DestructiveButton:pressed { background: #c23040; }
+
             QGroupBox {
                 font-weight: bold;
                 border: 1px solid palette(mid);
-                border-radius: 6px;
-                margin-top: 8px;
-                padding-top: 8px;
+                border-radius: 5px;
+                margin-top: 9px;
+                padding-top: 9px;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
@@ -499,15 +776,16 @@ class MainWindow(QMainWindow):
 
     def _check_status(self) -> bool:
         has_service = self.ztlib.zt_status()
-        has_token = bool(
+        has_token   = bool(
             self.ztlib.api_token and self.ztlib.check_token(self.ztlib.api_token)
         )
-
+        self._sb_service.setText(
+            _("Service: active") if has_service else _("Service: stopped")
+        )
         if has_service and has_token:
             self._info_bar.hide()
             self._refresh_networks()
             return True
-
         is_installed = self.ztlib.is_installed()
         if not is_installed:
             self._info_bar.set_message(
@@ -516,11 +794,11 @@ class MainWindow(QMainWindow):
             )
         elif not self.ztlib.api_token:
             self._info_bar.set_message(
-                _("No token set. Open Preferences and enter a valid X-ZT1-Auth token.")
+                _("No token set — open Settings → Configure to enter your X-ZT1-Auth token.")
             )
         else:
             self._info_bar.set_message(
-                _("ZeroTier service is not running. Start it from Preferences.")
+                _("ZeroTier service is not running. Start it from Settings → Configure.")
             )
         return False
 
@@ -535,28 +813,47 @@ class MainWindow(QMainWindow):
 
         current = {n["id"]: n for n in networks}
 
-        for nid in list(self._cards):
+        for nid in list(self._network_data):
             if nid not in current:
-                card = self._cards.pop(nid)
-                self._list_layout.removeWidget(card)
-                card.deleteLater()
+                del self._network_data[nid]
+                del self._row_widgets[nid]
+                for i in range(self._list.count()):
+                    if self._list.item(i).data(Qt.ItemDataRole.UserRole) == nid:
+                        self._list.takeItem(i)
+                        break
 
         for network in networks:
             nid = network["id"]
-            if nid in self._cards:
-                self._cards[nid].update_data(network)
+            self._network_data[nid] = network
+            if nid in self._row_widgets:
+                self._row_widgets[nid].update_data(network)
+                cur = self._list.currentItem()
+                if cur and cur.data(Qt.ItemDataRole.UserRole) == nid:
+                    self._detail.show_network(network)
             else:
-                card = NetworkCard(network)
-                card.toggle_changed.connect(self._on_toggle_changed)
-                card.settings_requested.connect(self._on_settings_requested)
-                # Insert before the trailing stretch (last item)
-                self._list_layout.insertWidget(self._list_layout.count() - 1, card)
-                self._cards[nid] = card
+                item = QListWidgetItem()
+                item.setData(Qt.ItemDataRole.UserRole, nid)
+                item.setSizeHint(QSize(0, 54))
+                self._list.addItem(item)
+                rw = _NetworkRowWidget(network)
+                self._list.setItemWidget(item, rw)
+                self._row_widgets[nid] = rw
 
-        has_networks = bool(self._cards)
-        self._empty_label.setVisible(not has_networks)
+        count = len(self._network_data)
+        self._sb_count.setText(
+            f"{count} " + (_("network") if count == 1 else _("networks"))
+        )
+        has = bool(count)
+        self._count_badge.setText(str(count))
+        self._count_badge.setVisible(has)
+        self._empty_widget.setVisible(not has)
+        if has and self._detail.isHidden() and not self._list.currentItem():
+            pass  # keep empty detail placeholder
+        elif not has:
+            self._detail.hide()
+            self._empty_widget.show()
 
-    # ── Toolbar handlers ──────────────────────────────────────────────────────
+    # ── Action handlers ───────────────────────────────────────────────────────
 
     def _on_add_clicked(self):
         dlg = AddNetworkDialog(self)
@@ -581,27 +878,27 @@ class MainWindow(QMainWindow):
 
     def _on_about_clicked(self):
         QMessageBox.about(
-            self,
-            _("About ZT Manager"),
+            self, _("About ZT Manager"),
             "<b>ZT Manager</b> — Qt6/KDE Edition<br>"
             "Version 0.1.0<br><br>"
             "Copyright © 2026 Riemaru Karurosu<br>"
-            "License: GPL-3.0-or-later<br><br>"
-            "<a href='https://github.com/RiemaruKarurosu/ZTManager'>"
-            "github.com/RiemaruKarurosu/ZTManager</a>",
+            "License: GPL-3.0-or-later",
         )
 
-    # ── Card signal handlers ──────────────────────────────────────────────────
+    def _on_selection_changed(self, current: QListWidgetItem, _prev):
+        if current is None:
+            self._detail.clear()
+            return
+        nid = current.data(Qt.ItemDataRole.UserRole)
+        if nid and nid in self._network_data:
+            self._empty_widget.hide()
+            self._detail.show()
+            self._detail.show_network(self._network_data[nid])
 
-    def _on_toggle_changed(self, network_id: str, state: bool):
-        self.ztlib.update_network(network_id, {"allowManaged": state})
+    def _on_network_removed(self, _nid: str):
+        self._refresh_networks()
 
-    def _on_settings_requested(self, network_id: str):
-        network = self.ztlib.get_network_details(network_id)
-        if network:
-            NetworkDetailsDialog(self, self.ztlib, network, self._refresh_networks).exec()
-
-    # ── Helpers used by PreferencesDialog ────────────────────────────────────
+    # ── Used by PreferencesDialog ─────────────────────────────────────────────
 
     def get_service_status(self) -> bool:
         return self.ztlib.zt_enable_status()

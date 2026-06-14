@@ -2,6 +2,7 @@ from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QDialog,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -11,7 +12,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from .window import ToggleSwitch
+from .window import ToggleSwitch, BREEZE_GREEN, BREEZE_RED
 from .zerotierlib import ZeroTierNetwork
 from . import _
 
@@ -19,8 +20,8 @@ from . import _
 class PreferencesDialog(QDialog):
     def __init__(self, parent, ztlib: ZeroTierNetwork):
         super().__init__(parent)
-        self.setWindowTitle(_("Preferences — ZT Manager"))
-        self.setMinimumWidth(440)
+        self.setWindowTitle(_("Configure ZT Manager"))
+        self.setMinimumWidth(460)
         self.ztlib = ztlib
         self._main_window = parent
 
@@ -32,77 +33,89 @@ class PreferencesDialog(QDialog):
         layout.addWidget(self._build_service_group())
         layout.addStretch()
 
-        self._status_label = QLabel()
-        self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self._status_label)
+        self._status_lbl = QLabel()
+        self._status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._status_lbl)
 
         close_btn = QPushButton(_("Close"))
+        close_btn.setMinimumWidth(90)
         close_btn.clicked.connect(self.close)
-        btn_bar = QHBoxLayout()
-        btn_bar.addStretch()
-        btn_bar.addWidget(close_btn)
-        layout.addLayout(btn_bar)
+        bl = QHBoxLayout()
+        bl.addStretch()
+        bl.addWidget(close_btn)
+        layout.addLayout(bl)
 
-    # ── Auth group ────────────────────────────────────────────────────────────
+    # ── Authentication ────────────────────────────────────────────────────────
 
     def _build_auth_group(self) -> QGroupBox:
-        group = QGroupBox(_("Authentication"))
-        layout = QVBoxLayout(group)
+        grp = QGroupBox(_("Authentication"))
+        layout = QVBoxLayout(grp)
         layout.setSpacing(12)
 
-        # Token input row
-        token_row = QHBoxLayout()
-
-        icon_lbl = QLabel()
-        icon_lbl.setPixmap(QIcon.fromTheme("dialog-password").pixmap(QSize(20, 20)))
-        token_row.addWidget(icon_lbl)
+        # Token row
+        row = QHBoxLayout()
+        key_icon = QLabel()
+        key_icon.setPixmap(QIcon.fromTheme("dialog-password").pixmap(QSize(20, 20)))
+        row.addWidget(key_icon)
 
         self._token_input = QLineEdit()
         self._token_input.setEchoMode(QLineEdit.EchoMode.Password)
         self._token_input.setPlaceholderText(_("X-ZT1-Auth Token"))
         self._token_input.setClearButtonEnabled(True)
+        self._token_input.setMinimumHeight(32)
         if self.ztlib.api_token:
             self._token_input.setText(self.ztlib.api_token)
         self._token_input.textChanged.connect(self._on_token_changed)
-        token_row.addWidget(self._token_input, 1)
+        row.addWidget(self._token_input, 1)
 
-        show_btn = QPushButton()
-        show_btn.setIcon(QIcon.fromTheme("view-visible"))
-        show_btn.setCheckable(True)
-        show_btn.setFixedSize(30, 30)
-        show_btn.setFlat(True)
-        show_btn.setToolTip(_("Show / hide token"))
-        show_btn.toggled.connect(
+        eye = QPushButton()
+        eye.setIcon(QIcon.fromTheme("view-visible"))
+        eye.setCheckable(True)
+        eye.setFixedSize(30, 30)
+        eye.setFlat(True)
+        eye.setToolTip(_("Show / hide token"))
+        eye.toggled.connect(
             lambda on: self._token_input.setEchoMode(
                 QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password
             )
         )
-        token_row.addWidget(show_btn)
-        layout.addLayout(token_row)
+        row.addWidget(eye)
+        layout.addLayout(row)
+
+        # Inline token status
+        self._token_status = QLabel()
+        self._token_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._token_status)
+
+        # Separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(sep)
 
         # Auto-detect row
         detect_row = QHBoxLayout()
-
-        detect_text = QVBoxLayout()
-        detect_text.setSpacing(2)
-        detect_text.addWidget(QLabel(f"<b>{_('Auto-detect Token')}</b>"))
+        txt = QVBoxLayout()
+        txt.setSpacing(2)
+        txt.addWidget(QLabel(f"<b>{_('Auto-detect Token')}</b>"))
         hint = QLabel(_("Read from /var/lib/zerotier-one/authtoken.secret"))
         hint.setObjectName("SubtitleLabel")
-        detect_text.addWidget(hint)
-        detect_row.addLayout(detect_text, 1)
+        txt.addWidget(hint)
+        detect_row.addLayout(txt, 1)
 
         detect_btn = QPushButton(_("Detect"))
+        detect_btn.setMinimumWidth(80)
         detect_btn.clicked.connect(self._on_auto_detect)
         detect_row.addWidget(detect_btn)
         layout.addLayout(detect_row)
 
-        return group
+        return grp
 
-    # ── Service group ─────────────────────────────────────────────────────────
+    # ── Service ───────────────────────────────────────────────────────────────
 
     def _build_service_group(self) -> QGroupBox:
-        group = QGroupBox(_("ZeroTier Service"))
-        layout = QVBoxLayout(group)
+        grp = QGroupBox(_("ZeroTier Service"))
+        layout = QVBoxLayout(grp)
         layout.setSpacing(12)
 
         is_running = self.ztlib.zt_status()
@@ -115,6 +128,12 @@ class PreferencesDialog(QDialog):
             is_running,
             self._on_start_toggled,
         )
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(sep)
+
         self._add_toggle_row(
             layout,
             _("Start on boot"),
@@ -122,43 +141,44 @@ class PreferencesDialog(QDialog):
             is_enabled,
             self._on_enable_toggled,
         )
-        return group
+        return grp
 
-    def _add_toggle_row(self, parent_layout, title, subtitle, state, callback):
+    def _add_toggle_row(self, parent_layout, title: str, subtitle: str,
+                        state: bool, callback):
         row = QHBoxLayout()
-
-        text = QVBoxLayout()
-        text.setSpacing(2)
-        text.addWidget(QLabel(f"<b>{title}</b>"))
+        txt = QVBoxLayout()
+        txt.setSpacing(3)
+        txt.addWidget(QLabel(f"<b>{title}</b>"))
         sub = QLabel(subtitle)
         sub.setObjectName("SubtitleLabel")
-        text.addWidget(sub)
-        row.addLayout(text, 1)
+        txt.addWidget(sub)
+        row.addLayout(txt, 1)
 
         toggle = ToggleSwitch()
-        toggle.setChecked(state)
+        toggle.snap_to(state)
         toggle.toggled.connect(callback)
-        row.addWidget(toggle)
-
+        row.addWidget(toggle, 0, Qt.AlignmentFlag.AlignVCenter)
         parent_layout.addLayout(row)
 
-    # ── Signal handlers ────────────────────────────────────────────────────────
+    # ── Handlers ──────────────────────────────────────────────────────────────
 
     def _on_token_changed(self, text: str):
         token = text.strip()
         if not token:
-            self._status_label.clear()
+            self._token_status.clear()
             return
         if self.ztlib.check_token(token):
             self.ztlib.api_token = token
             self.ztlib.headers = {"X-ZT1-Auth": token}
             self.ztlib.save_token()
-            self._status_label.setText(
-                f"<font color='green'>{_('Token valid — saved.')}</font>"
+            self._token_status.setText(
+                f"<span style='color:{BREEZE_GREEN};font-weight:bold;'>"
+                f"✓ {_('Token valid — saved.')}</span>"
             )
         else:
-            self._status_label.setText(
-                f"<font color='red'>{_('Token invalid.')}</font>"
+            self._token_status.setText(
+                f"<span style='color:{BREEZE_RED};font-weight:bold;'>"
+                f"✗ {_('Token invalid.')}</span>"
             )
 
     def _on_auto_detect(self):
@@ -167,8 +187,7 @@ class PreferencesDialog(QDialog):
             self._token_input.setText(token)
         else:
             QMessageBox.warning(
-                self,
-                _("Detection Failed"),
+                self, _("Detection Failed"),
                 _("Could not read the system token. Is ZeroTier installed?"),
             )
 
