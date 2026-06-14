@@ -40,12 +40,13 @@ echo "Downloading ZeroTier install script..."
 curl -fsS https://install.zerotier.com > /tmp/zt_install.sh
 
 echo "Patching script for Nobara compatibility..."
-# case-statement branches:   fedora)  →  fedora|nobara)
-sed -i 's/fedora)/fedora|nobara)/g' /tmp/zt_install.sh
-# string comparisons:        "fedora" →  "fedora"|"nobara"
-sed -i 's/"fedora"/"fedora"|"nobara"/g' /tmp/zt_install.sh
-# fallback: after the script sources /etc/os-release, remap ID if needed
-sed -i 's|\. /etc/os-release|. /etc/os-release; [ "$ID" = "nobara" ] \&\& ID=fedora|g' /tmp/zt_install.sh
+# After sourcing /etc/os-release, remap nobara → fedora so we enter the RPM branch.
+# The install script uses 'source', not '.', so we match that exactly.
+sed -i 's/^source \/etc\/os-release/source \/etc\/os-release; [ "$ID" = "nobara" ] \&\& ID=fedora/' /tmp/zt_install.sh
+# The inner check reads /etc/redhat-release for "fedora" to pick fc/ vs el/ repos.
+# Nobara's /etc/redhat-release says "Nobara release 43", not "Fedora ...", so we
+# extend the test to also trust $ID directly (which we just set to "fedora" above).
+sed -i 's@\[ -n "`cat /etc/redhat-release 2>/dev/null | grep -i fedora`" \]@[ -n "`cat /etc/redhat-release 2>/dev/null | grep -i fedora`" ] || [ "$ID" = "fedora" ]@g' /tmp/zt_install.sh
 
 echo "Running patched install script..."
 bash /tmp/zt_install.sh
